@@ -9,8 +9,8 @@ from tensorflow.python.keras import regularizers
 
 def load_datasets():
     global training, y_train
-    training = pd.read_csv('/kaggle/input/digit-recognizer/train.csv')
-    x_test_orig = pd.read_csv('/kaggle/input/digit-recognizer/test.csv')
+    training = pd.read_csv('input/digit-recognizer/train.csv')
+    x_test_orig = pd.read_csv('input/digit-recognizer/test.csv')
     training = training.sample(frac=1).reset_index(drop=True)
     y_train = training['label']
     x_train_orig = training.drop('label', axis=1)
@@ -128,20 +128,22 @@ def convert_model_outputs_to_decisions(probabilities):
     predictions.head()
     return predictions
 
+def get_early_stopping_callback():
+    return tf.keras.callbacks.EarlyStopping(
+        monitor='loss', min_delta=0.1, patience=5, verbose=1, mode='auto',
+        baseline=None, restore_best_weights=True
+    )
+
 
 x_train_orig, y_train, x_test_orig = load_datasets()
 explore_input_shape()
 x_train, x_test = reshape_and_normalize_datasets()
 explore_training_set()
 model = build_and_compile_model()
-# stop when model stops to improve on validation set
-early_stopping_callback = tf.keras.callbacks.EarlyStopping(
-    monitor='loss', min_delta=0.1, patience=5, verbose=1, mode='auto',
-    baseline=None, restore_best_weights=True
-)
-
+early_stopping_callback = get_early_stopping_callback()
 train_and_validate_model(model, x_train, y_train, early_stopping_callback)
-train_model(model, x_train, y_train)
-probabilities = predict(model, x_test)
+final_model = build_and_compile_model()
+train_model(final_model, x_train, y_train)
+probabilities = predict(final_model, x_test)
 predictions = convert_model_outputs_to_decisions(probabilities)
 predictions.to_csv('predictions_cnn_2layers_32dense_l2regression.csv', index_label='ImageId')
