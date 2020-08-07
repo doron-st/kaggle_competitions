@@ -8,9 +8,9 @@ from tensorflow.python.keras import regularizers
 
 
 def load_datasets():
-    global training, y_train
     training = pd.read_csv('input/digit-recognizer/train.csv')
     x_test_orig = pd.read_csv('input/digit-recognizer/test.csv')
+    # shuffle training input, to avoid hidden overfitting
     training = training.sample(frac=1).reset_index(drop=True)
     y_train = training['label']
     x_train_orig = training.drop('label', axis=1)
@@ -18,8 +18,8 @@ def load_datasets():
     return x_train_orig, y_train, x_test_orig
 
 
-def explore_input_shape():
-    first_image = x_train_orig.iloc[0]
+def explore_input_shape(x_train):
+    first_image = x_train.iloc[0]
     print('before reshape:')
     print(f'first_image.shape: {first_image.shape}')
     print(f'type(first_image): {type(first_image)}')
@@ -27,19 +27,22 @@ def explore_input_shape():
     print('after reshape:')
     print(f'first_image.shape: {first_image.shape}')
     print(f'type(first_image): {type(first_image)}')
-    print(f'x_train.shape:     {x_train_orig.shape}')
-    reshaped = x_train_orig.apply(lambda row: row.values.reshape(28, 28), axis=1)
+    print(f'x_train.shape:     {x_train.shape}')
+    reshaped = x_train.apply(lambda row: row.values.reshape(28, 28), axis=1)
     print(f'reshaped.shape:    {reshaped.shape}')
 
 
-# reshape each image as numpy matrix
 def reshape_as_3d_matrix(df):
+    """
+    :param df: pandas data-frame with 784 pixels per row
+    :return: numpy 3d matrix with 28X28 image per row
+    """
     tmp_series = df.apply(lambda row: row.values.reshape(28, 28), axis=1)
     return np.reshape(np.concatenate(tmp_series.values), (df.shape[0], 28, 28, 1))
 
 
-def reshape_and_normalize_datasets():
-    x_train, x_test = x_train_orig / 255.0, x_test_orig / 255.0
+def reshape_and_normalize_datasets(x_train_original, x_test_original):
+    x_train, x_test = x_train_original / 255.0, x_test_original / 255.0 # normalize greyscale to [0,1]
     print(f'x_train.shape: {x_train.shape}')
     print('reshaping...')
     x_train = reshape_as_3d_matrix(x_train)
@@ -48,7 +51,7 @@ def reshape_and_normalize_datasets():
     return x_train, x_test
 
 
-def explore_training_set():
+def visualize_training_set_examples(x_train, y_train):
     for i in range(10):
         plt.figure()
         sns.heatmap(x_train[i, :, :, 0])
@@ -91,7 +94,7 @@ def train_model(model, x_train, y_train):
         verbose=1)
 
 
-def train_and_validate_model(model, x_train, y_train, early_stopping_callback, validation_fraction=0.1):
+def train_and_validate_model(model, x_train, y_train, validation_fraction=0.1):
     split_index = int((1 - validation_fraction) * x_train.shape[0])
     x_do_train = x_train[0:split_index]
     x_valid = x_train[split_index:x_train.shape[0]]
@@ -100,13 +103,14 @@ def train_and_validate_model(model, x_train, y_train, early_stopping_callback, v
     y_valid = y_train[split_index:]
     print(f'training_set size: {x_do_train.shape[0]}')
     print(f'validation_set size: {x_valid.shape[0]}')
-    # train model to minize loss
+
+    # train model to minimize loss
     model.fit(
         x_do_train,
         y_do_train,
         epochs=5,
         batch_size=32,
-        callbacks=[early_stopping_callback],
+        callbacks=[get_early_stopping_callback()],
         validation_data=(x_valid, y_valid),
         verbose=1)
 
@@ -128,6 +132,7 @@ def convert_model_outputs_to_decisions(probabilities):
     predictions.head()
     return predictions
 
+
 def get_early_stopping_callback():
     return tf.keras.callbacks.EarlyStopping(
         monitor='loss', min_delta=0.1, patience=5, verbose=1, mode='auto',
@@ -135,15 +140,19 @@ def get_early_stopping_callback():
     )
 
 
-x_train_orig, y_train, x_test_orig = load_datasets()
-explore_input_shape()
-x_train, x_test = reshape_and_normalize_datasets()
-explore_training_set()
-model = build_and_compile_model()
-early_stopping_callback = get_early_stopping_callback()
-train_and_validate_model(model, x_train, y_train, early_stopping_callback)
-final_model = build_and_compile_model()
-train_model(final_model, x_train, y_train)
-probabilities = predict(final_model, x_test)
-predictions = convert_model_outputs_to_decisions(probabilities)
-predictions.to_csv('predictions_cnn_2layers_32dense_l2regression.csv', index_label='ImageId')
+def main():
+    x_train_orig, y_train, x_test_orig = load_datasets()
+    explore_input_shape(x_train_orig)
+    x_train, x_test = reshape_and_normalize_datasets(x_train_orig, x_test_orig)
+    visualize_training_set_examples(x_train, y_train)
+    model = build_and_compile_model()
+    train_and_validate_model(model, x_train, y_train)
+    final_model = build_and_compile_model()
+    train_model(final_model, x_train, y_train)
+    probabilities = predict(final_model, x_test)
+    predictions = convert_model_outputs_to_decisions(probabilities)
+    predictions.to_csv('predictions_cnn_2layers_32dense_l2regression.csv', index_label='ImageId')
+
+
+if __name__ == '__main__':
+    main()
