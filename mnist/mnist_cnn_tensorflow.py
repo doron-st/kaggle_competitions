@@ -5,12 +5,13 @@ import seaborn as sns
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.python.keras import regularizers
+from sklearn.model_selection import train_test_split
 
 
 def load_datasets():
-    training = pd.read_csv('input/digit-recognizer/train.csv')
-    x_test_orig = pd.read_csv('input/digit-recognizer/test.csv')
-    # shuffle training input, to avoid hidden overfitting
+    training = pd.read_csv('inputs/digit-recognizer/train.csv')
+    x_test_orig = pd.read_csv('inputs/digit-recognizer/test.csv')
+    # shuffle training inputs, to avoid hidden overfitting
     training = training.sample(frac=1).reset_index(drop=True)
     y_train = training['label']
     x_train_orig = training.drop('label', axis=1)
@@ -42,7 +43,7 @@ def reshape_as_3d_matrix(df):
 
 
 def reshape_and_normalize_datasets(x_train_original, x_test_original):
-    x_train, x_test = x_train_original / 255.0, x_test_original / 255.0 # normalize greyscale to [0,1]
+    x_train, x_test = x_train_original / 255.0, x_test_original / 255.0  # normalize greyscale to [0,1]
     print(f'x_train.shape: {x_train.shape}')
     print('reshaping...')
     x_train = reshape_as_3d_matrix(x_train)
@@ -59,24 +60,29 @@ def visualize_training_set_examples(x_train, y_train):
         plt.show()
 
 
-def build_and_compile_model(num_of_filters=30, filter_size=5):
+def build_and_compile_model(num_of_filters=32, filter_size=5, dense_layer_size=128, dropout_rate=0.4):
     # Build the model
     model = keras.models.Sequential([
-        keras.layers.Conv2D(num_of_filters, (filter_size, filter_size), activation='relu', input_shape=(28, 28, 1),
+        keras.layers.Conv2D(num_of_filters, filter_size, activation='relu', input_shape=(28, 28, 1),
                             padding='same',
                             kernel_regularizer=regularizers.l2(0.001)),
         keras.layers.MaxPooling2D((2, 2)),
-        keras.layers.Conv2D(num_of_filters, (filter_size, filter_size), activation='relu', padding='same',
+        keras.layers.Dropout(dropout_rate),
+        keras.layers.Conv2D(num_of_filters * 2, filter_size, activation='relu', padding='same',
                             kernel_regularizer=regularizers.l2(0.001)),
         keras.layers.MaxPooling2D((2, 2)),
+        keras.layers.Dropout(dropout_rate),
         keras.layers.Flatten(),
-        keras.layers.Dense(32, activation='relu'),
-        keras.layers.Dropout(0.2),
+        keras.layers.Dense(dense_layer_size, activation='relu'),
+        keras.layers.Dropout(dropout_rate),
         keras.layers.Dense(10, activation='relu')
     ])
+
     print(model.summary())
+
     # Construct loss function
     loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
+
     # compile loss function into model
     model.compile(optimizer='adam',
                   loss=loss_fn,
@@ -95,12 +101,8 @@ def train_model(model, x_train, y_train):
 
 
 def train_and_validate_model(model, x_train, y_train, validation_fraction=0.1):
-    split_index = int((1 - validation_fraction) * x_train.shape[0])
-    x_do_train = x_train[0:split_index]
-    x_valid = x_train[split_index:x_train.shape[0]]
+    x_do_train, x_valid, y_do_train, y_valid = train_test_split(x_train, y_train, test_size=validation_fraction)
 
-    y_do_train = y_train[0:split_index]
-    y_valid = y_train[split_index:]
     print(f'training_set size: {x_do_train.shape[0]}')
     print(f'validation_set size: {x_valid.shape[0]}')
 
