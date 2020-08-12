@@ -5,12 +5,13 @@ dependencies:
   - jupyterlab
   - python=3.7
   - scipy
+  - statsmodels
   - pandas
   - numpy
+  - scikit-learn
+  - tensorflow=2.2.0
   - matplotlib
   - seaborn
   - plotly
   - pytest
   - testfixtures
-  - scikit-learn
-  - tensorflow=2.2.0
