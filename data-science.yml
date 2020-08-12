@@ -12,4 +12,5 @@ dependencies:
   - plotly
   - pytest
   - testfixtures
+  - scikit-learn
   - tensorflow=2.2.0

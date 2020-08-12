@@ -2,13 +2,71 @@ import numpy as np
 from time import time
 import shutil
 from skimage import exposure
-import numpy as np # linear algebra
-import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+import numpy as np 
+import pandas as pd 
 import matplotlib.pyplot as plt
 import seaborn as sns
 import tensorflow as tf
 from sklearn.preprocessing import LabelEncoder
 import pydicom
+from scipy.stats import pearsonr
+train_meta = pd.read_csv('input/osic-pulmonary-fibrosis-progression/train.csv')
+test_meta = pd.read_csv('input/osic-pulmonary-fibrosis-progression/test.csv')
+
+base_measure = train_meta.groupby(by='Patient')
+
+data_time = train_meta.groupby(by="Patient")["Weeks"].count().reset_index()
+train_meta["Time"] = 0
+
+for patient, times in zip(data_time["Patient"], data_time["Weeks"]):
+    train_meta.loc[train_meta["Patient"] == patient, 'Time'] = range(1, times+1)
+    
+secondary_measures = train_meta[train_meta['Time'] > 1]
+
+base_and_secondary_pairs = base_measure.merge(secondary_measures, how='inner', on=['Patient', 'Sex', 'Age', 'SmokingStatus'])
+base_and_secondary_pairs['WeeksDiff'] = base_and_secondary_pairs['Weeks_y'] - base_and_secondary_pairs['Weeks_x']
+base_and_secondary_pairs['FVCDiff'] = base_and_secondary_pairs['FVC_y'] - base_and_secondary_pairs['FVC_x']
+
+def plot_weeks_diff_to_fvc(base_and_secondary_pairs):
+    fig  = plt.figure()
+    plt.scatter(base_and_secondary_pairs['WeeksDiff'], base_and_secondary_pairs['FVCDiff'], marker='o', alpha=0.2)
+
+    corr = pearsonr(base_and_secondary_pairs['WeeksDiff'], base_and_secondary_pairs['FVCDiff'])
+    print(f'pearsonr = {corr}')
+    
+    m, b = np.polyfit(base_and_secondary_pairs['WeeksDiff'], base_and_secondary_pairs['FVCDiff'], 1)
+    plt.plot(base_and_secondary_pairs['WeeksDiff'], m * base_and_secondary_pairs['WeeksDiff'] + b, color='red')
+    fig.show()
+
+plot_weeks_diff_to_fvc(base_and_secondary_pairs)    
+
+train_y = base_and_secondary_pairs['FVCDiff']
+train_x = base_and_secondary_pairs.drop(['FVCDiff'], axis=1)
+
+
+    
+
+min_fvc = train[train["Time"] == 1][["Patient", "FVC"]].reset_index(drop=True)
+
+idx = train.groupby(["Patient"])["Weeks"].transform(max) == train["Weeks"]
+max_fvc = train[idx][["Patient", "FVC"]].reset_index(drop=True)
+
+# Compute difference and select only top patients with biggest difference
+data = pd.merge(min_fvc, max_fvc, how="inner", on="Patient")
+data["Dif"] = data["FVC_x"] - data["FVC_y"]
+
+# Select only top n
+l = list(data.sort_values("Dif", ascending=False).head(100)["Patient"])
+x = train[train["Patient"].isin(l)]
+gbp = train_meta.groupby('Patient').agg([
+                                        lambda x: x.iloc[0], 
+                                        lambda x: x.iloc[1],
+                                        lambda x: x.iloc[2],
+                                        lambda x: x.iloc[3],
+                                        lambda x: x.iloc[4]
+                                        ])
+gvp = gbp[['Weeks', 'FVC']]
+gbp.head()
 
 def even_select(array, m):
     """
