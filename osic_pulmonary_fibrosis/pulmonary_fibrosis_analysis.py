@@ -78,15 +78,25 @@ def scale_features(df, scaler=None):
                                                 index=df.index)
     return df_scaled, scaler
 
-def make_test_data_to_model_compatible(test_meta):
+def make_test_data_to_model_compatible(test_meta, label_encoder, scaler):
     possible_weeks = pd.DataFrame(np.arange(-12,133), columns=['PossibleWeeks'])    
     possible_weeks['cross_product_key'] = 1
     test_meta['cross_product_key'] = 1
     df = test_meta.merge(possible_weeks, on='cross_product_key')
     df['WeeksDiff'] = df['PossibleWeeks'] - df['Weeks']
-    df = df[(df['WeeksDiff'] >= -12) & (df['WeeksDiff'] <= 133)]
+    #df = df[(df['WeeksDiff'] >= -12) & (df['WeeksDiff'] <= 133)]
     df = df.drop('cross_product_key', axis=1)
-    return df
+    
+    df['SmokingStatus'] = label_encoder.transform(df['SmokingStatus'])
+    df['Sex'] = (df['Sex'] == 'Male') + 0
+
+    test_x_dont_scale = df[['Patient', 'PossibleWeeks']]
+    patient_week = pd.Series(test_x_dont_scale['Patient'] + '_' 
+                         + test_x_dont_scale['PossibleWeeks'].astype(str), 
+                         name='Patient_Week')
+    df = df.drop(['Patient', 'PossibleWeeks', 'Percent'], axis=1)
+    df_scaled, _ = scale_features(df, scaler)
+    return df, df_scaled, patient_week
 
 def analyse_each_variable(train_x, train_y):
     plot_single_var_to_fvc_diff(train_x, train_y, 'WeeksDiff')    
@@ -96,6 +106,16 @@ def analyse_each_variable(train_x, train_y):
     plot_single_var_to_fvc_diff(train_x, train_y, 'Sex')    
     plot_single_var_to_fvc_diff(train_x, train_y, 'SmokingStatus')    
     
+
+def plot_actual_fvc_vs_predicted_in_training_set(fvc_target, fvc_predicted):
+    plt.figure()
+    plt.xlabel('actual FVC at secondary checkup')
+    plt.ylabel('predicted FVC at secondary checkup')
+    plt.scatter(fvc_target, fvc_predicted, alpha=0.2)
+    plt.show()
+    ols_model = sm.OLS(fvc_target, fvc_predicted)
+    predictor = ols_model.fit()
+    print(predictor.summary())
     
 # Load meta-data
 train_meta = pd.read_csv('input/osic-pulmonary-fibrosis-progression/train.csv')
@@ -104,40 +124,31 @@ test_meta = pd.read_csv('input/osic-pulmonary-fibrosis-progression/test.csv')
 base_and_secondary_pairs = group_base_and_secondary_measurements(train_meta)
 base_and_secondary_pairs_enc, label_encoder = encode_categories(base_and_secondary_pairs)
 
+# prepare final training-set and labels
 train_y = base_and_secondary_pairs_enc['FVCDiff']
 train_x = define_features(base_and_secondary_pairs_enc)
 analyse_each_variable(train_x, train_y)
 train_x_scaled, scaler = scale_features(train_x)
-
 
 # Fit and summarize OLS model
 ols_model = sm.OLS(train_y, train_x_scaled)
 predictor = ols_model.fit()
 print(predictor.summary())
 
+# sanity check prediction on training-set
+predicted_fvc_diff = predictor.predict(train_x_scaled)
+fvc_predicted_training = predicted_fvc_diff + train_x['FVC']
+plot_actual_fvc_vs_predicted_in_training_set(base_and_secondary_pairs['FVCTarget'], fvc_predicted_training)
 
-plt.xlabel('actual FVC at secondary checkup')
-plt.ylabel('predicted FVC at secondary checkup')
-plt.scatter(base_and_secondary_pairs['FVCTarget'], train_x['FVC'] + predictor.predict(train_x_scaled), alpha=0.2)
-plt.scatter(base_and_secondary_pairs['FVC'], base_and_secondary_pairs['FVC'], alpha=0.2, color='red')
-plt.show()
-
-
-test_x = make_test_data_to_model_compatible(test_meta)
-test_x['SmokingStatus'] = label_encoder.transform(test_x['SmokingStatus'])
-test_x['Sex'] = (test_x['Sex'] == 'Male') + 0
-
-test_x_dont_scale = test_x[['Patient', 'PossibleWeeks']]
-patient_week = pd.Series(test_x_dont_scale['Patient'] + '_' 
-                         + test_x_dont_scale['PossibleWeeks'].astype(str), 
-                         name='Patient_Week')
-test_x = test_x.drop(['Patient', 'PossibleWeeks', 'Percent'], axis=1)
-test_x_scaled, _ = scale_features(test_x, scaler)
+# process and predict from test_data
+test_x, test_x_scaled, patient_week = make_test_data_to_model_compatible(test_meta, label_encoder, scaler)
 fvc_diff_prediction = predictor.predict(test_x_scaled)
-pd.concat([patient_week, test_x, (test_x['FVC'] + fvc_diff_prediction)], axis=1)
-train_x_scaled.shape
-test_x_scaled.shape
+fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
 
+# set confidence above regression on training-set confidence interval
+confidence = pd.Series(fvc_prediction * 0.15, name='Confidence').astype(int)
+prediction = pd.concat([patient_week, fvc_prediction, confidence ], axis=1)
+prediction.to_csv('submission.csv', index=False)
 ###################
 # CT scans analysis
 ###################
