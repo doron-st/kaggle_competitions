@@ -8,12 +8,14 @@ import statsmodels.api as sm
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import MinMaxScaler
-
+from sklearn.ensemble import RandomForestRegressor
 
 ####################
 # meta-data analysis
 ####################
 
+# Current best cross-validation score -6.80912 (ols)
+# Current best cross-validation score -6.802929 (RandomForestRegressor(n_estimators=50, random_state=0, max_leaf_nodes=5))
 
 def explore_data(df):
     label_encoder = LabelEncoder()
@@ -143,7 +145,7 @@ def calc_confidence(fvc_prediction, fvc_fraction):
 def cross_validate(k, data):
     patients = data['Patient'].unique()
     kf = KFold(n_splits=k)
-    confidence_levels = 210 + np.arange(10) * 5 # empircally found to be the best confidence constant range in OLS
+    confidence_levels = 210 + np.arange(30) * 5 # empircally found to be the best confidence constant range in OLS
     metric_per_conf_level = np.zeros(confidence_levels.shape[0])
     for train_index, val_index in kf.split(patients):
         train_patients = patients[train_index]
@@ -212,24 +214,27 @@ def preprocess_validation_data(val_data, scaler, label_encoder):
     return fvc_initial_val, fvc_true_val, x_scaled_val
 
 
-def train(train_meta, verbose=1):
+def train(train_meta, verbose=0):
     fvc_initial_train, fvc_true_train, label_encoder, scaler, x_scaled_train, fvc_diff_train = preprocess_training_data(
         train_meta, verbose)
 
     # Fit and summarize OLS model
     ols_model = sm.OLS(fvc_diff_train, x_scaled_train)
-    predictor = ols_model.fit()
+    ols_predictor = ols_model.fit()
     if verbose > 0:
-        print(predictor.summary())
+        print(ols_predictor.summary())
+
+    rf = RandomForestRegressor(n_estimators=50, random_state=0, max_leaf_nodes=5)
+    rf.fit(x_scaled_train, fvc_diff_train)
+
     # sanity check prediction on training-set
-    predicted_fvc_diff = predictor.predict(x_scaled_train)
+    predicted_fvc_diff = ols_predictor.predict(x_scaled_train)
     fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
     if verbose > 0:
         plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
-        confidence = np.ones(fvc_predicted_training.shape[0]) * 235
-        metric = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
-        print(f'confidence 235 score: {metric}')
-    return predictor, label_encoder, scaler
+        #confidence = np.ones(fvc_predicted_training.shape[0]) * 235
+        #metric = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
+    return rf, label_encoder, scaler
 
 
 def predict(test_meta, predictor, scaler, label_encoder):
