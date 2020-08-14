@@ -7,8 +7,10 @@ import seaborn as sns
 import tensorflow as tf
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import KFold
 from scipy.stats import pearsonr
 import statsmodels.api as sm
+from math import sqrt
 
 
 ####################
@@ -18,8 +20,8 @@ import statsmodels.api as sm
 
 def explore_data(df):
     label_encoder = LabelEncoder()
-    df['SmokingStatus_code'] = label_encoder.fit_transform(df['SmokingStatus'])
-    df['Sex_code'] = (df['Sex'] == 'Male') + 0
+    df.loc[:, 'SmokingStatus_code'] = label_encoder.fit_transform(df['SmokingStatus'])
+    df.loc[:, 'Sex_code'] = (df['Sex'] == 'Male') + 0
     plt.figure()
     sns.pairplot(df)
     plt.figure()
@@ -32,7 +34,7 @@ def group_base_and_secondary_measurements(train_meta):
     base_measure = train_meta.groupby(by='Patient').first()
 
     data_time = train_meta.groupby(by="Patient")["Weeks"].count().reset_index()
-    train_meta["Time"] = 0
+    train_meta.loc[:, "Time"] = 0
 
     for patient, times in zip(data_time["Patient"], data_time["Weeks"]):
         train_meta.loc[train_meta["Patient"] == patient, 'Time'] = range(1, times + 1)
@@ -41,8 +43,9 @@ def group_base_and_secondary_measurements(train_meta):
 
     base_and_secondary_pairs = base_measure.merge(secondary_measures, how='inner',
                                                   on=['Patient', 'Sex', 'Age', 'SmokingStatus'])
-    base_and_secondary_pairs['WeeksDiff'] = base_and_secondary_pairs['Weeks_y'] - base_and_secondary_pairs['Weeks_x']
-    base_and_secondary_pairs['FVCDiff'] = base_and_secondary_pairs['FVC_y'] - base_and_secondary_pairs['FVC_x']
+    base_and_secondary_pairs.loc[:, 'WeeksDiff'] = base_and_secondary_pairs['Weeks_y'] - base_and_secondary_pairs[
+        'Weeks_x']
+    base_and_secondary_pairs.loc[:, 'FVCDiff'] = base_and_secondary_pairs['FVC_y'] - base_and_secondary_pairs['FVC_x']
 
     base_and_secondary_pairs = base_and_secondary_pairs.set_index(['Patient', 'Weeks_y'])
     base_and_secondary_pairs = base_and_secondary_pairs.drop(['Time'], axis=1)
@@ -66,11 +69,16 @@ def plot_single_var_to_fvc_diff(x, y, column_name):
     print(reg.fit().summary())
 
 
-def encode_categories(df):
-    label_encoder = LabelEncoder()
-    df['SmokingStatus'] = label_encoder.fit_transform(df['SmokingStatus'])
-    df['Sex'] = (df['Sex'] == 'Male') + 0
-    return df, label_encoder
+def encode_categories(df, fit=True, label_encoder=None):
+    df.loc[:, 'Sex'] = (df['Sex'] == 'Male') + 0
+
+    if fit:
+        label_encoder = LabelEncoder()
+        df.loc[:, 'SmokingStatus'] = label_encoder.fit_transform(df['SmokingStatus'])
+        return df, label_encoder
+    else:
+        df.loc[:, 'SmokingStatus'] = label_encoder.transform(df['SmokingStatus'])
+        return df
 
 
 def define_features(df):
@@ -94,17 +102,70 @@ def scale_features(df, scaler=None):
     return df_scaled, scaler
 
 
+def analyse_each_variable(train_x, train_y):
+    plot_single_var_to_fvc_diff(train_x, train_y, 'WeeksDiff')
+    plot_single_var_to_fvc_diff(train_x, train_y, 'FVC')
+    plot_single_var_to_fvc_diff(train_x, train_y, 'Weeks')
+    plot_single_var_to_fvc_diff(train_x, train_y, 'Age')
+    plot_single_var_to_fvc_diff(train_x, train_y, 'Sex')
+    plot_single_var_to_fvc_diff(train_x, train_y, 'SmokingStatus')
+
+
+def plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted, fvc_true):
+    plt.figure()
+    plt.xlabel('actual FVC at secondary checkup')
+    plt.ylabel('predicted FVC at secondary checkup')
+    plt.scatter(fvc_true, fvc_predicted, alpha=0.2)
+    plt.show()
+    ols_model = sm.OLS(fvc_true, fvc_predicted)
+    predictor = ols_model.fit()
+    print(predictor.summary())
+
+
+def evaluate_results(fvc_true, fvc_predicted, std):
+    assert fvc_true.shape == fvc_predicted.shape
+    std_clipped = np.maximum(std, 70)
+    delta = np.minimum(np.abs(fvc_true - fvc_predicted), 1000)
+    metric = (sqrt(2) * delta) / std_clipped - np.log(sqrt(2) * std_clipped)
+    plt.hist(metric, bins=20)
+    return np.mean(metric)
+
+
+def calc_confidence(fvc_prediction, fvc_fraction):
+    return pd.Series(fvc_prediction * fvc_fraction, name='Confidence').astype(int)
+
+
+def cross_validate(k, data):
+    patients = data['Patient'].unique()
+    kf = KFold(n_splits=k)
+    for train_index, val_index in kf.split(patients):
+        train_patients = patients[train_index]
+        val_patients = patients[val_index]
+        validation_set = data[data['Patient'].isin(val_patients)]
+        training_set = data[data['Patient'].isin(train_patients)]
+        print(validation_set.shape)
+        predictor, label_encoder, scaler = train(training_set, verbose=0)
+        fvc_initial_val, fvc_true_val, x_scaled_val = preprocess_validation_data(validation_set, scaler, label_encoder)
+        predicted_fvc_diff = predictor.predict(x_scaled_val)
+        fvc_predicted_val = predicted_fvc_diff + fvc_initial_val
+        plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
+        for i in range(10):
+            confidence = calc_confidence(fvc_predicted_val, i / 10)
+            metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
+            print(f'{i / 10}) {metric}')
+
+
 def make_test_data_to_model_compatible(test_meta, label_encoder, scaler):
     possible_weeks = pd.DataFrame(np.arange(-12, 133 + 1), columns=['PossibleWeeks'])
-    possible_weeks['cross_product_key'] = 1
-    test_meta['cross_product_key'] = 1
+    possible_weeks.loc[:, 'cross_product_key'] = 1
+    test_meta.loc[:, 'cross_product_key'] = 1
     df = test_meta.merge(possible_weeks, on='cross_product_key')
-    df['WeeksDiff'] = df['PossibleWeeks'] - df['Weeks']
+    df.loc[:, 'WeeksDiff'] = df['PossibleWeeks'] - df['Weeks']
     # df = df[(df['WeeksDiff'] >= -12) & (df['WeeksDiff'] <= 133)]
     df = df.drop('cross_product_key', axis=1)
 
-    df['SmokingStatus'] = label_encoder.transform(df['SmokingStatus'])
-    df['Sex'] = (df['Sex'] == 'Male') + 0
+    df.loc[:, 'SmokingStatus'] = label_encoder.transform(df['SmokingStatus'])
+    df.loc[:, 'Sex'] = (df['Sex'] == 'Male') + 0
 
     test_x_dont_scale = df[['Patient', 'PossibleWeeks']]
     patient_week = pd.Series(test_x_dont_scale['Patient'] + '_'
@@ -115,61 +176,74 @@ def make_test_data_to_model_compatible(test_meta, label_encoder, scaler):
     return df, df_scaled, patient_week
 
 
-def analyse_each_variable(train_x, train_y):
-    plot_single_var_to_fvc_diff(train_x, train_y, 'WeeksDiff')
-    plot_single_var_to_fvc_diff(train_x, train_y, 'FVC')
-    plot_single_var_to_fvc_diff(train_x, train_y, 'Weeks')
-    plot_single_var_to_fvc_diff(train_x, train_y, 'Age')
-    plot_single_var_to_fvc_diff(train_x, train_y, 'Sex')
-    plot_single_var_to_fvc_diff(train_x, train_y, 'SmokingStatus')
+def train(train_meta, verbose=1):
+    fvc_initial_train, fvc_true_train, label_encoder, scaler, x_scaled_train, fvc_diff_train = preprocess_training_data(
+        train_meta, verbose)
 
-
-def plot_actual_fvc_vs_predicted_in_training_set(fvc_target, fvc_predicted):
-    plt.figure()
-    plt.xlabel('actual FVC at secondary checkup')
-    plt.ylabel('predicted FVC at secondary checkup')
-    plt.scatter(fvc_target, fvc_predicted, alpha=0.2)
-    plt.show()
-    ols_model = sm.OLS(fvc_target, fvc_predicted)
+    # Fit and summarize OLS model
+    ols_model = sm.OLS(fvc_diff_train, x_scaled_train)
     predictor = ols_model.fit()
-    print(predictor.summary())
+    if verbose > 0:
+        print(predictor.summary())
+    # sanity check prediction on training-set
+    predicted_fvc_diff = predictor.predict(x_scaled_train)
+    fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
+    if verbose > 0:
+        plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
+        for i in range(10):
+            metric = evaluate_results(fvc_predicted_training, fvc_true_train,
+                                      calc_confidence(fvc_predicted_training, i / 10))
+            print(f'{i / 10}) {metric}')
+    return predictor, label_encoder, scaler
+
+
+def preprocess_training_data(train_data, verbose):
+    base_and_secondary_pairs = group_base_and_secondary_measurements(train_data)
+    base_and_secondary_pairs_enc, label_encoder = encode_categories(base_and_secondary_pairs)
+    fvc_true = base_and_secondary_pairs['FVCTarget']
+    fvc_initial = base_and_secondary_pairs_enc['FVC']
+    # prepare final training-set and labels
+    fvc_diff = base_and_secondary_pairs_enc['FVCDiff']
+    train_x = define_features(base_and_secondary_pairs_enc)
+    if verbose > 0:
+        analyse_each_variable(train_x, fvc_diff)
+    x_scaled, scaler = scale_features(train_x)
+    return fvc_initial, fvc_true, label_encoder, scaler, x_scaled, fvc_diff
+
+
+def preprocess_validation_data(val_data, scaler, label_encoder):
+    val_base_and_secondary_pairs = group_base_and_secondary_measurements(val_data)
+    val_base_and_secondary_pairs_enc = encode_categories(val_base_and_secondary_pairs, fit=False,
+                                                         label_encoder=label_encoder)
+    fvc_true_val = val_base_and_secondary_pairs['FVCTarget']
+    fvc_initial_val = val_base_and_secondary_pairs_enc['FVC']
+    # prepare final training-set and labels
+    x_val = define_features(val_base_and_secondary_pairs_enc)
+    x_scaled_val = scaler.transform(x_val)
+    return fvc_initial_val, fvc_true_val, x_scaled_val
+
+
+def predict(test_meta, predictor, scaler, label_encoder):
+    test_x, test_x_scaled, patient_week = make_test_data_to_model_compatible(test_meta, label_encoder, scaler)
+    print(test_x)
+    fvc_diff_prediction = predictor.predict(test_x_scaled)
+    fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
+    # set confidence above regression on training-set confidence interval
+    confidence = calc_confidence(fvc_prediction, 0.15)
+    submission_df = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
+    return fvc_prediction, submission_df
 
 
 def main():
     # Load meta-data
     train_meta = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/train.csv')
     test_meta = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/test.csv')
-    
-    #explore_data(train_meta)
 
-    base_and_secondary_pairs = group_base_and_secondary_measurements(train_meta)
-    base_and_secondary_pairs_enc, label_encoder = encode_categories(base_and_secondary_pairs)
-
-    # prepare final training-set and labels
-    train_y = base_and_secondary_pairs_enc['FVCDiff']
-    train_x = define_features(base_and_secondary_pairs_enc)
-    analyse_each_variable(train_x, train_y)
-    train_x_scaled, scaler = scale_features(train_x)
-
-    # Fit and summarize OLS model
-    ols_model = sm.OLS(train_y, train_x_scaled)
-    predictor = ols_model.fit()
-    print(predictor.summary())
-
-    # sanity check prediction on training-set
-    predicted_fvc_diff = predictor.predict(train_x_scaled)
-    fvc_predicted_training = predicted_fvc_diff + train_x['FVC']
-    plot_actual_fvc_vs_predicted_in_training_set(base_and_secondary_pairs['FVCTarget'], fvc_predicted_training)
-
-    # process and predict from test_data
-    test_x, test_x_scaled, patient_week = make_test_data_to_model_compatible(test_meta, label_encoder, scaler)
-    fvc_diff_prediction = predictor.predict(test_x_scaled)
-    fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
-
-    # set confidence above regression on training-set confidence interval
-    confidence = pd.Series(fvc_prediction * 0.15, name='Confidence').astype(int)
-    prediction = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
-    prediction.to_csv('submission.csv', index=False)
+    cross_validate(10, train_meta)
+    # explore_data(train_meta)
+    predictor, label_encoder, scaler = train(train_meta)
+    _, submission_df = predict(test_meta, predictor, scaler, label_encoder)
+    submission_df.to_csv('submission.csv', index=False)
 
 
 if __name__ == '__main__':
