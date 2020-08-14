@@ -79,7 +79,7 @@ def scale_features(df, scaler=None):
     return df_scaled, scaler
 
 def make_test_data_to_model_compatible(test_meta, label_encoder, scaler):
-    possible_weeks = pd.DataFrame(np.arange(-12,133), columns=['PossibleWeeks'])    
+    possible_weeks = pd.DataFrame(np.arange(-12, 133 + 1), columns=['PossibleWeeks'])    
     possible_weeks['cross_product_key'] = 1
     test_meta['cross_product_key'] = 1
     df = test_meta.merge(possible_weeks, on='cross_product_key')
@@ -121,6 +121,9 @@ def plot_actual_fvc_vs_predicted_in_training_set(fvc_target, fvc_predicted):
 train_meta = pd.read_csv('input/osic-pulmonary-fibrosis-progression/train.csv')
 test_meta = pd.read_csv('input/osic-pulmonary-fibrosis-progression/test.csv')
 
+#test_meta = train_meta.groupby(by='Patient').first()
+#test_meta['Patient'] = test_meta.index
+
 base_and_secondary_pairs = group_base_and_secondary_measurements(train_meta)
 base_and_secondary_pairs_enc, label_encoder = encode_categories(base_and_secondary_pairs)
 
@@ -149,6 +152,8 @@ fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').asty
 confidence = pd.Series(fvc_prediction * 0.15, name='Confidence').astype(int)
 prediction = pd.concat([patient_week, fvc_prediction, confidence ], axis=1)
 prediction.to_csv('submission.csv', index=False)
+
+
 ###################
 # CT scans analysis
 ###################
