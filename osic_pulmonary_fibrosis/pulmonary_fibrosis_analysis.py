@@ -27,16 +27,22 @@ def explore_data(df):
     sns.boxplot(x=df['SmokingStatus'], y=df['Percent'])
 
 
-def group_base_and_secondary_measurements(train_meta):
-    base_measure = train_meta.groupby(by='Patient').first()
+def group_base_and_secondary_measurements(labeled_data):
+    """
+    :param labeled_data: labeled data of Patient, Week (since CT scan), FVC, Age, Sex, SmokingStatus
+    :return: labled data of paired records between first measurement of different weeks from the same patient.
+               Weeks (initial), FVC (initial), Percent (initial), Age, Sex, SmokingStatus, FVCTarget, PercentTarget, WeeksDiff, FVCDiff
+    """
+    labeled_data_cp = labeled_data.copy() # to avoid side-affects and warnings by modifying original data_frame
+    base_measure = labeled_data.groupby(by='Patient').first()
+    data_time = labeled_data.groupby(by="Patient")["Weeks"].count().reset_index()
 
-    data_time = train_meta.groupby(by="Patient")["Weeks"].count().reset_index()
-    train_meta.loc[:, "Time"] = 0
+    labeled_data_cp['Time'] = 0
 
     for patient, times in zip(data_time["Patient"], data_time["Weeks"]):
-        train_meta.loc[train_meta["Patient"] == patient, 'Time'] = range(1, times + 1)
+        labeled_data_cp.loc[labeled_data_cp["Patient"] == patient, 'Time'] = range(1, times + 1)
 
-    secondary_measures = train_meta[train_meta['Time'] > 1]
+    secondary_measures = labeled_data_cp[labeled_data_cp['Time'] > 1]
 
     base_and_secondary_pairs = base_measure.merge(secondary_measures, how='inner',
                                                   on=['Patient', 'Sex', 'Age', 'SmokingStatus'])
@@ -137,14 +143,13 @@ def calc_confidence(fvc_prediction, fvc_fraction):
 def cross_validate(k, data):
     patients = data['Patient'].unique()
     kf = KFold(n_splits=k)
-    confidence_levels = np.arange(20) / 100
+    confidence_levels = 210 + np.arange(10) * 5 # empircally found to be the best confidence constant range in OLS
     metric_per_conf_level = np.zeros(confidence_levels.shape[0])
     for train_index, val_index in kf.split(patients):
         train_patients = patients[train_index]
         val_patients = patients[val_index]
         validation_set = data[data['Patient'].isin(val_patients)]
         training_set = data[data['Patient'].isin(train_patients)]
-        print(validation_set.shape)
         predictor, label_encoder, scaler = train(training_set, verbose=0)
         fvc_initial_val, fvc_true_val, x_scaled_val = preprocess_validation_data(validation_set, scaler, label_encoder)
         predicted_fvc_diff = predictor.predict(x_scaled_val)
@@ -152,16 +157,20 @@ def cross_validate(k, data):
         #plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
 
         for i in np.arange(confidence_levels.shape[0]):
-            confidence = calc_confidence(fvc_predicted_val, confidence_levels[i])
+            #confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
+            confidence = np.ones(fvc_predicted_val.shape[0]) * confidence_levels[i]
             metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
             metric_per_conf_level[i] += metric
+    print(f'{k}-fold mean competition score, per confidence level:')
     print(pd.DataFrame([confidence_levels, metric_per_conf_level / k]).to_string())
 
-def make_test_data_to_model_compatible(test_meta, label_encoder, scaler):
+
+def make_test_data_to_model_compatible(test_data, label_encoder, scaler):
+    test_data_copy = test_data.copy() # copy df to avoid side-affects
     possible_weeks = pd.DataFrame(np.arange(-12, 133 + 1), columns=['PossibleWeeks'])
-    possible_weeks.loc[:, 'cross_product_key'] = 1
-    test_meta.loc[:, 'cross_product_key'] = 1
-    df = test_meta.merge(possible_weeks, on='cross_product_key')
+    possible_weeks['cross_product_key'] = 1
+    test_data_copy['cross_product_key'] = 1
+    df = test_data_copy.merge(possible_weeks, on='cross_product_key')
     df.loc[:, 'WeeksDiff'] = df['PossibleWeeks'] - df['Weeks']
 
     df = df.drop('cross_product_key', axis=1)
@@ -175,27 +184,6 @@ def make_test_data_to_model_compatible(test_meta, label_encoder, scaler):
     df = df.drop(['Patient', 'PossibleWeeks', 'Percent'], axis=1)
     df_scaled, _ = scale_features(df, scaler)
     return df, df_scaled, patient_week
-
-
-def train(train_meta, verbose=1):
-    fvc_initial_train, fvc_true_train, label_encoder, scaler, x_scaled_train, fvc_diff_train = preprocess_training_data(
-        train_meta, verbose)
-
-    # Fit and summarize OLS model
-    ols_model = sm.OLS(fvc_diff_train, x_scaled_train)
-    predictor = ols_model.fit()
-    if verbose > 0:
-        print(predictor.summary())
-    # sanity check prediction on training-set
-    predicted_fvc_diff = predictor.predict(x_scaled_train)
-    fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
-    if verbose > 0:
-        plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
-        for i in range(10):
-            metric = evaluate_results(fvc_predicted_training, fvc_true_train,
-                                      calc_confidence(fvc_predicted_training, i / 10))
-            print(f'{i / 10}) {metric}')
-    return predictor, label_encoder, scaler
 
 
 def preprocess_training_data(train_data, verbose):
@@ -224,13 +212,33 @@ def preprocess_validation_data(val_data, scaler, label_encoder):
     return fvc_initial_val, fvc_true_val, x_scaled_val
 
 
+def train(train_meta, verbose=1):
+    fvc_initial_train, fvc_true_train, label_encoder, scaler, x_scaled_train, fvc_diff_train = preprocess_training_data(
+        train_meta, verbose)
+
+    # Fit and summarize OLS model
+    ols_model = sm.OLS(fvc_diff_train, x_scaled_train)
+    predictor = ols_model.fit()
+    if verbose > 0:
+        print(predictor.summary())
+    # sanity check prediction on training-set
+    predicted_fvc_diff = predictor.predict(x_scaled_train)
+    fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
+    if verbose > 0:
+        plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
+        confidence = np.ones(fvc_predicted_training.shape[0]) * 235
+        metric = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
+        print(f'confidence 235 score: {metric}')
+    return predictor, label_encoder, scaler
+
+
 def predict(test_meta, predictor, scaler, label_encoder):
     test_x, test_x_scaled, patient_week = make_test_data_to_model_compatible(test_meta, label_encoder, scaler)
     print(test_x)
     fvc_diff_prediction = predictor.predict(test_x_scaled)
     fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
     # set confidence above regression on training-set confidence interval
-    confidence = calc_confidence(fvc_prediction, 0.09)
+    confidence = pd.Series(np.ones(fvc_prediction.shape[0]).astype(int) * 235)
     submission_df = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
     return fvc_prediction, submission_df
 
