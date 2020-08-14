@@ -15,7 +15,7 @@ from sklearn.ensemble import RandomForestRegressor
 ####################
 
 # Current best cross-validation score -6.80912 (ols)
-# Current best cross-validation score -6.802929 (RandomForestRegressor(n_estimators=50, random_state=0, max_leaf_nodes=5))
+# Current best cross-validation score -6.799495 (RandomForestRegressor(n_estimators=50, random_state=0, max_leaf_nodes=5))
 
 def explore_data(df):
     label_encoder = LabelEncoder()
@@ -138,8 +138,9 @@ def evaluate_results(fvc_true, fvc_predicted, std):
     return np.mean(metric)
 
 
-def calc_confidence(fvc_prediction, fvc_fraction):
-    return pd.Series(fvc_prediction * fvc_fraction, name='Confidence').astype(int)
+def calc_confidence(fvc_prediction, fvc_fraction, confidence_baseline):
+    return pd.Series(fvc_prediction * fvc_fraction * 0.1 + np.ones(fvc_prediction.shape[0]) * confidence_baseline * 0.9,
+                     name='Confidence').astype(int)
 
 
 def cross_validate(k, data):
@@ -160,7 +161,7 @@ def cross_validate(k, data):
 
         for i in np.arange(confidence_levels.shape[0]):
             #confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
-            confidence = np.ones(fvc_predicted_val.shape[0]) * confidence_levels[i]
+            confidence = calc_confidence(fvc_predicted_val, 0.09, confidence_levels[i])
             metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
             metric_per_conf_level[i] += metric
     print(f'{k}-fold mean competition score, per confidence level:')
@@ -243,7 +244,7 @@ def predict(test_meta, predictor, scaler, label_encoder):
     fvc_diff_prediction = predictor.predict(test_x_scaled)
     fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
     # set confidence above regression on training-set confidence interval
-    confidence = pd.Series(np.ones(fvc_prediction.shape[0]).astype(int) * 235)
+    confidence =  calc_confidence(fvc_prediction, 0.09, 235)
     submission_df = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
     return fvc_prediction, submission_df
 
