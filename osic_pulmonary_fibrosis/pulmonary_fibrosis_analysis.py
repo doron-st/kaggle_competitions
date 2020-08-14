@@ -10,12 +10,13 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestRegressor
 
+
 ####################
 # meta-data analysis
 ####################
 
-# Current best cross-validation score -6.80912 (ols)
-# Current best cross-validation score -6.799495 (RandomForestRegressor(n_estimators=50, random_state=0, max_leaf_nodes=5))
+# Current best OLS cross-validation score -6.80912
+# Current best RF cross-validation score -6.795974 (n_estimators=50, random_state=0, max_leaf_nodes=5))
 
 def explore_data(df):
     label_encoder = LabelEncoder()
@@ -35,7 +36,7 @@ def group_base_and_secondary_measurements(labeled_data):
     :return: labled data of paired records between first measurement of different weeks from the same patient.
                Weeks (initial), FVC (initial), Percent (initial), Age, Sex, SmokingStatus, FVCTarget, PercentTarget, WeeksDiff, FVCDiff
     """
-    labeled_data_cp = labeled_data.copy() # to avoid side-affects and warnings by modifying original data_frame
+    labeled_data_cp = labeled_data.copy()  # to avoid side-affects and warnings by modifying original data_frame
     base_measure = labeled_data.groupby(by='Patient').first()
     data_time = labeled_data.groupby(by="Patient")["Weeks"].count().reset_index()
 
@@ -139,14 +140,14 @@ def evaluate_results(fvc_true, fvc_predicted, std):
 
 
 def calc_confidence(fvc_prediction, fvc_fraction, confidence_baseline):
-    return pd.Series(fvc_prediction * fvc_fraction * 0.1 + np.ones(fvc_prediction.shape[0]) * confidence_baseline * 0.9,
+    return pd.Series(fvc_prediction * fvc_fraction * 0.3 + np.ones(fvc_prediction.shape[0]) * confidence_baseline * 0.7,
                      name='Confidence').astype(int)
 
 
 def cross_validate(k, data):
     patients = data['Patient'].unique()
     kf = KFold(n_splits=k)
-    confidence_levels = 210 + np.arange(30) * 5 # empircally found to be the best confidence constant range in OLS
+    confidence_levels = 210 + np.arange(20) * 5  # empircally found to be the best confidence constant range in OLS
     metric_per_conf_level = np.zeros(confidence_levels.shape[0])
     for train_index, val_index in kf.split(patients):
         train_patients = patients[train_index]
@@ -157,10 +158,10 @@ def cross_validate(k, data):
         fvc_initial_val, fvc_true_val, x_scaled_val = preprocess_validation_data(validation_set, scaler, label_encoder)
         predicted_fvc_diff = predictor.predict(x_scaled_val)
         fvc_predicted_val = predicted_fvc_diff + fvc_initial_val
-        #plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
+        # plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
 
         for i in np.arange(confidence_levels.shape[0]):
-            #confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
+            # confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
             confidence = calc_confidence(fvc_predicted_val, 0.09, confidence_levels[i])
             metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
             metric_per_conf_level[i] += metric
@@ -169,7 +170,7 @@ def cross_validate(k, data):
 
 
 def make_test_data_to_model_compatible(test_data, label_encoder, scaler):
-    test_data_copy = test_data.copy() # copy df to avoid side-affects
+    test_data_copy = test_data.copy()  # copy df to avoid side-affects
     possible_weeks = pd.DataFrame(np.arange(-12, 133 + 1), columns=['PossibleWeeks'])
     possible_weeks['cross_product_key'] = 1
     test_data_copy['cross_product_key'] = 1
@@ -233,8 +234,8 @@ def train(train_meta, verbose=0):
     fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
     if verbose > 0:
         plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
-        #confidence = np.ones(fvc_predicted_training.shape[0]) * 235
-        #metric = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
+        # confidence = np.ones(fvc_predicted_training.shape[0]) * 235
+        # metric = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
     return rf, label_encoder, scaler
 
 
@@ -244,7 +245,7 @@ def predict(test_meta, predictor, scaler, label_encoder):
     fvc_diff_prediction = predictor.predict(test_x_scaled)
     fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
     # set confidence above regression on training-set confidence interval
-    confidence =  calc_confidence(fvc_prediction, 0.09, 235)
+    confidence = calc_confidence(fvc_prediction, 0.09, 230)
     submission_df = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
     return fvc_prediction, submission_df
 
