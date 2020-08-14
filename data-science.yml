@@ -15,3 +15,6 @@ dependencies:
   - plotly
   - pytest
   - testfixtures
+  - scikit-image
+  - pydicom
+  - gdcm

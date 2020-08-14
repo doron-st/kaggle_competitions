@@ -15,6 +15,19 @@ import statsmodels.api as sm
 # meta-data analysis
 ####################
 
+
+def explore_data(df):
+    label_encoder = LabelEncoder()
+    df['SmokingStatus_code'] = label_encoder.fit_transform(df['SmokingStatus'])
+    df['Sex_code'] = (df['Sex'] == 'Male') + 0
+    plt.figure()
+    sns.pairplot(df)
+    plt.figure()
+    sns.boxplot(x=df['SmokingStatus'], y=df['FVC'])
+    plt.figure()
+    sns.boxplot(x=df['SmokingStatus'], y=df['Percent'])
+
+
 def group_base_and_secondary_measurements(train_meta):
     base_measure = train_meta.groupby(by='Patient').first()
 
@@ -126,6 +139,8 @@ def main():
     # Load meta-data
     train_meta = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/train.csv')
     test_meta = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/test.csv')
+    
+    #explore_data(train_meta)
 
     base_and_secondary_pairs = group_base_and_secondary_measurements(train_meta)
     base_and_secondary_pairs_enc, label_encoder = encode_categories(base_and_secondary_pairs)
