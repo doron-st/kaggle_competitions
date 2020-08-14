@@ -8,6 +8,7 @@ import statsmodels.api as sm
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 
 
@@ -16,7 +17,7 @@ from sklearn.ensemble import RandomForestRegressor
 ####################
 
 # Current best OLS cross-validation score -6.80912
-# Current best RF cross-validation score -6.795974 (n_estimators=50, random_state=0, max_leaf_nodes=5))
+# Current best RF cross-validation score -6.794988 (n_estimators=50, random_state=0, max_leaf_nodes=5))
 
 def explore_data(df):
     label_encoder = LabelEncoder()
@@ -97,7 +98,8 @@ def define_features(df):
 
 def scale_features(df, scaler=None):
     if scaler is None:
-        scaler = MinMaxScaler()
+        #scaler = MinMaxScaler()
+        scaler = StandardScaler()
         df_scaled = pd.DataFrame(scaler.fit_transform(df),
                                  columns=df.columns,
                                  index=df.index)
@@ -114,7 +116,7 @@ def analyse_each_variable(train_x, train_y):
     plot_single_var_to_fvc_diff(train_x, train_y, 'Weeks')
     plot_single_var_to_fvc_diff(train_x, train_y, 'Age')
     plot_single_var_to_fvc_diff(train_x, train_y, 'Sex')
-    plot_single_var_to_fvc_diff(train_x, train_y, 'SmokingStatus')
+    #plot_single_var_to_fvc_diff(train_x, train_y, 'SmokingStatus')
 
 
 def plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted, fvc_true):
@@ -147,7 +149,7 @@ def calc_confidence(fvc_prediction, fvc_fraction, confidence_baseline):
 def cross_validate(k, data):
     patients = data['Patient'].unique()
     kf = KFold(n_splits=k)
-    confidence_levels = 210 + np.arange(20) * 5  # empircally found to be the best confidence constant range in OLS
+    confidence_levels = 210 + np.arange(10) * 5  # empircally found to be the best confidence constant range in OLS
     metric_per_conf_level = np.zeros(confidence_levels.shape[0])
     for train_index, val_index in kf.split(patients):
         train_patients = patients[train_index]
@@ -198,7 +200,7 @@ def preprocess_training_data(train_data, verbose):
     # prepare final training-set and labels
     fvc_diff = base_and_secondary_pairs_enc['FVCDiff']
     train_x = define_features(base_and_secondary_pairs_enc)
-    if verbose > 0:
+    if verbose > 1:
         analyse_each_variable(train_x, fvc_diff)
     x_scaled, scaler = scale_features(train_x)
     return fvc_initial, fvc_true, label_encoder, scaler, x_scaled, fvc_diff
@@ -226,13 +228,13 @@ def train(train_meta, verbose=0):
     if verbose > 0:
         print(ols_predictor.summary())
 
-    rf = RandomForestRegressor(n_estimators=50, random_state=0, max_leaf_nodes=5)
+    rf = RandomForestRegressor(n_estimators=40, random_state=0, max_leaf_nodes=5)
     rf.fit(x_scaled_train, fvc_diff_train)
 
     # sanity check prediction on training-set
     predicted_fvc_diff = ols_predictor.predict(x_scaled_train)
     fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
-    if verbose > 0:
+    if verbose > 2:
         plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
         # confidence = np.ones(fvc_predicted_training.shape[0]) * 235
         # metric = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
@@ -257,7 +259,7 @@ def main():
 
     cross_validate(10, train_meta)
     # explore_data(train_meta)
-    predictor, label_encoder, scaler = train(train_meta)
+    predictor, label_encoder, scaler = train(train_meta, verbose=1)
     _, submission_df = predict(test_meta, predictor, scaler, label_encoder)
     submission_df.to_csv('submission.csv', index=False)
 
