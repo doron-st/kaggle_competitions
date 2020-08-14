@@ -1,16 +1,13 @@
-import numpy as np
-from time import time
-import shutil
-import pandas as pd
+from math import sqrt
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import seaborn as sns
-import tensorflow as tf
+import statsmodels.api as sm
+from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import KFold
-from scipy.stats import pearsonr
-import statsmodels.api as sm
-from math import sqrt
 
 
 ####################
@@ -124,10 +121,12 @@ def plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted, fvc_true):
 
 def evaluate_results(fvc_true, fvc_predicted, std):
     assert fvc_true.shape == fvc_predicted.shape
+    assert fvc_true.shape == std.shape
+
     std_clipped = np.maximum(std, 70)
     delta = np.minimum(np.abs(fvc_true - fvc_predicted), 1000)
-    metric = (sqrt(2) * delta) / std_clipped - np.log(sqrt(2) * std_clipped)
-    plt.hist(metric, bins=20)
+    metric = (-1 * sqrt(2) * delta).divide(std_clipped) - np.log(sqrt(2) * std_clipped)
+    # plt.hist(metric, bins=20)
     return np.mean(metric)
 
 
@@ -138,6 +137,8 @@ def calc_confidence(fvc_prediction, fvc_fraction):
 def cross_validate(k, data):
     patients = data['Patient'].unique()
     kf = KFold(n_splits=k)
+    confidence_levels = np.arange(20) / 100
+    metric_per_conf_level = np.zeros(confidence_levels.shape[0])
     for train_index, val_index in kf.split(patients):
         train_patients = patients[train_index]
         val_patients = patients[val_index]
@@ -148,12 +149,13 @@ def cross_validate(k, data):
         fvc_initial_val, fvc_true_val, x_scaled_val = preprocess_validation_data(validation_set, scaler, label_encoder)
         predicted_fvc_diff = predictor.predict(x_scaled_val)
         fvc_predicted_val = predicted_fvc_diff + fvc_initial_val
-        plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
-        for i in range(10):
-            confidence = calc_confidence(fvc_predicted_val, i / 10)
-            metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
-            print(f'{i / 10}) {metric}')
+        #plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
 
+        for i in np.arange(confidence_levels.shape[0]):
+            confidence = calc_confidence(fvc_predicted_val, confidence_levels[i])
+            metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
+            metric_per_conf_level[i] += metric
+    print(pd.DataFrame([confidence_levels, metric_per_conf_level / k]).to_string())
 
 def make_test_data_to_model_compatible(test_meta, label_encoder, scaler):
     possible_weeks = pd.DataFrame(np.arange(-12, 133 + 1), columns=['PossibleWeeks'])
@@ -161,9 +163,8 @@ def make_test_data_to_model_compatible(test_meta, label_encoder, scaler):
     test_meta.loc[:, 'cross_product_key'] = 1
     df = test_meta.merge(possible_weeks, on='cross_product_key')
     df.loc[:, 'WeeksDiff'] = df['PossibleWeeks'] - df['Weeks']
-    # df = df[(df['WeeksDiff'] >= -12) & (df['WeeksDiff'] <= 133)]
-    df = df.drop('cross_product_key', axis=1)
 
+    df = df.drop('cross_product_key', axis=1)
     df.loc[:, 'SmokingStatus'] = label_encoder.transform(df['SmokingStatus'])
     df.loc[:, 'Sex'] = (df['Sex'] == 'Male') + 0
 
@@ -229,7 +230,7 @@ def predict(test_meta, predictor, scaler, label_encoder):
     fvc_diff_prediction = predictor.predict(test_x_scaled)
     fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
     # set confidence above regression on training-set confidence interval
-    confidence = calc_confidence(fvc_prediction, 0.15)
+    confidence = calc_confidence(fvc_prediction, 0.09)
     submission_df = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
     return fvc_prediction, submission_df
 
