@@ -18,7 +18,7 @@ from xgboost import XGBRegressor
 ####################
 
 # Current best OLS cross-validation score -6.80912
-# Current best RF cross-validation score -6.794988 (n_estimators=50, random_state=0, max_leaf_nodes=5))
+# Current best RF cross-validation score -6.778862 (n_estimators=50, random_state=0, max_leaf_nodes=5))
 # current best GB cross-validation score -6.769532
 
 def explore_data(df):
@@ -211,7 +211,9 @@ def preprocess_validation_data(val_data, scaler, label_encoder):
 def cross_validate(k, data):
     patients = data['Patient'].unique()
     kf = KFold(n_splits=k)
-    confidence_levels = 210 + np.arange(10) * 5  # empircally found to be the best confidence constant range in OLS
+    num_of_confidence_levels = 10
+    initial_confidence_base_line = 210 # close to optimum point
+    confidence_levels = initial_confidence_base_line + np.arange(num_of_confidence_levels) * 5
     sum_score_per_conf_level = np.zeros(confidence_levels.shape[0])
     for train_index, val_index in kf.split(patients):
         train_patients = patients[train_index]
@@ -238,7 +240,9 @@ def cross_validate(k, data):
                            axis=1)
     print(tunning_df.to_string())
     best_confidence_baseline = tunning_df['confidence_baseline'][tunning_df['score'].argmax()]
+    best_score = tunning_df['score'].max()
     print(f'best_confidence_baseline = {best_confidence_baseline}')
+    print(f'best_score = {best_score}')
     return best_confidence_baseline
 
 
@@ -252,14 +256,14 @@ def train(train_meta, verbose=0):
     if verbose > 0:
         print(ols_predictor.summary())
 
-    random_forest_model = RandomForestRegressor(n_estimators=40, random_state=0, max_leaf_nodes=5)
-    random_forest_model.fit(x_scaled_train, fvc_diff_train)
+    random_forest_predictor = RandomForestRegressor(n_estimators=40, random_state=0, max_leaf_nodes=5)
+    random_forest_predictor.fit(x_scaled_train, fvc_diff_train)
 
-    grad_boosting_model = XGBRegressor(n_estimators=25, learning_rate=0.05, n_jobs=4, max_depth=3, random_state=0)
-    grad_boosting_model.fit(x_scaled_train, fvc_diff_train)
+    grad_boosting_predictor = XGBRegressor(n_estimators=25, learning_rate=0.05, n_jobs=4, max_depth=3, random_state=0)
+    grad_boosting_predictor.fit(x_scaled_train, fvc_diff_train)
 
     # choose predictor manually
-    predictor = grad_boosting_model
+    predictor = grad_boosting_predictor
 
     # sanity check prediction on training-set
     predicted_fvc_diff = predictor.predict(x_scaled_train)
