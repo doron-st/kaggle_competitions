@@ -12,13 +12,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 
+
 ####################
 # meta-data analysis
 ####################
 
 # Current best OLS cross-validation score -6.80912
 # Current best RF cross-validation score -6.794988 (n_estimators=50, random_state=0, max_leaf_nodes=5))
-# current best GB cross-validation score -6.786792
+# current best GB cross-validation score -6.769532
 
 def explore_data(df):
     label_encoder = LabelEncoder()
@@ -100,7 +101,7 @@ def define_features(df):
 def scale_features(df, scaler=None):
     # fit scaler
     if scaler is None:
-        #scaler = MinMaxScaler()
+        # scaler = MinMaxScaler()
         scaler = StandardScaler()
         df_scaled = pd.DataFrame(scaler.fit_transform(df),
                                  columns=df.columns,
@@ -120,7 +121,7 @@ def analyse_each_variable(train_x, train_y):
     plot_single_var_to_fvc_diff(train_x, train_y, 'Weeks')
     plot_single_var_to_fvc_diff(train_x, train_y, 'Age')
     plot_single_var_to_fvc_diff(train_x, train_y, 'Sex')
-    #plot_single_var_to_fvc_diff(train_x, train_y, 'SmokingStatus')
+    # plot_single_var_to_fvc_diff(train_x, train_y, 'SmokingStatus')
 
 
 def plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted, fvc_true):
@@ -145,8 +146,18 @@ def evaluate_results(fvc_true, fvc_predicted, std):
     return np.mean(metric)
 
 
-def calc_confidence(fvc_prediction, fvc_fraction, confidence_baseline):
-    return pd.Series(fvc_prediction * fvc_fraction * 0.3 + np.ones(fvc_prediction.shape[0]) * confidence_baseline * 0.7,
+def calc_confidence(fvc_prediction, weeks_diff, fvc_fraction, confidence_baseline):
+    scaled_weeks_diff_multiplier = 40
+    base_line_weight = 0.6
+    fvc_prediction_weight = 1 - base_line_weight
+    # stay close to data-driven confidence_baseline
+    confidence_baseline_term = np.ones(fvc_prediction.shape[0]) * confidence_baseline
+    fvc_proportion_term = fvc_prediction * fvc_fraction  # less confident for higher fvc values
+    # we are less confident as time from first measurement increases
+    time_dependent_term = weeks_diff * scaled_weeks_diff_multiplier
+    return pd.Series(fvc_proportion_term * fvc_prediction_weight
+                     + confidence_baseline_term * base_line_weight
+                     + time_dependent_term,
                      name='Confidence').astype(int)
 
 
@@ -209,22 +220,22 @@ def cross_validate(k, data):
         training_set = data[data['Patient'].isin(train_patients)]
         predictor, label_encoder, scaler = train(training_set, verbose=0)
         fvc_initial_val, fvc_true_val, x_scaled_val = preprocess_validation_data(validation_set, scaler, label_encoder)
-        #x_scaled_val = x_scaled_val[training_set.columns]
+        # x_scaled_val = x_scaled_val[training_set.columns]
         predicted_fvc_diff = predictor.predict(x_scaled_val)
         fvc_predicted_val = predicted_fvc_diff + fvc_initial_val
         # plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
 
         for i in np.arange(confidence_levels.shape[0]):
             # confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
-            confidence = calc_confidence(fvc_predicted_val, 0.09, confidence_levels[i])
+            confidence = calc_confidence(fvc_predicted_val, x_scaled_val['WeeksDiff'], 0.09, confidence_levels[i])
             metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
             sum_score_per_conf_level[i] += metric
 
     mean_score_per_conf_level = sum_score_per_conf_level / k
     print(f'\n{k}-fold mean competition score, per confidence level:')
     tunning_df = pd.concat([pd.Series(confidence_levels, name='confidence_baseline'),
-                     pd.Series(mean_score_per_conf_level, name='score')],
-                    axis=1)
+                            pd.Series(mean_score_per_conf_level, name='score')],
+                           axis=1)
     print(tunning_df.to_string())
     best_confidence_baseline = tunning_df['confidence_baseline'][tunning_df['score'].argmax()]
     print(f'best_confidence_baseline = {best_confidence_baseline}')
@@ -255,7 +266,7 @@ def train(train_meta, verbose=0):
     fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
     if verbose > 1:
         plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
-    confidence = calc_confidence(fvc_predicted_training, 0.09, 230)
+    confidence = calc_confidence(fvc_predicted_training, x_scaled_train['WeeksDiff'], 0.09, 230)
     score = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
     print(f'score for training set = {score}')
     return predictor, label_encoder, scaler
@@ -267,7 +278,7 @@ def predict(test_meta, predictor, scaler, label_encoder, best_confidence_baselin
     fvc_diff_prediction = predictor.predict(test_x_scaled)
     fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
     # set confidence above regression on training-set confidence interval
-    confidence = calc_confidence(fvc_prediction, 0.09, best_confidence_baseline)
+    confidence = calc_confidence(fvc_prediction, test_x_scaled['WeeksDiff'], 0.09, best_confidence_baseline)
     submission_df = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
     return fvc_prediction, submission_df
 
