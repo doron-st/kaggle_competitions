@@ -10,6 +10,7 @@ dependencies:
   - numpy
   - scikit-learn
   - tensorflow=2.2.0
+  - xgboost
   - matplotlib
   - seaborn
   - plotly

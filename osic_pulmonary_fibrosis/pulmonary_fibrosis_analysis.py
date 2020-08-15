@@ -10,7 +10,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
-
+from xgboost import XGBRegressor
 
 ####################
 # meta-data analysis
@@ -18,6 +18,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 # Current best OLS cross-validation score -6.80912
 # Current best RF cross-validation score -6.794988 (n_estimators=50, random_state=0, max_leaf_nodes=5))
+# current best GB cross-validation score -6.786792
 
 def explore_data(df):
     label_encoder = LabelEncoder()
@@ -97,17 +98,20 @@ def define_features(df):
 
 
 def scale_features(df, scaler=None):
+    # fit scaler
     if scaler is None:
         #scaler = MinMaxScaler()
         scaler = StandardScaler()
         df_scaled = pd.DataFrame(scaler.fit_transform(df),
                                  columns=df.columns,
                                  index=df.index)
+        return df_scaled, scaler
+    # transform using existing scaler
     else:
         df_scaled = pd.DataFrame(scaler.transform(df),
                                  columns=df.columns,
                                  index=df.index)
-    return df_scaled, scaler
+        return df_scaled
 
 
 def analyse_each_variable(train_x, train_y):
@@ -146,31 +150,6 @@ def calc_confidence(fvc_prediction, fvc_fraction, confidence_baseline):
                      name='Confidence').astype(int)
 
 
-def cross_validate(k, data):
-    patients = data['Patient'].unique()
-    kf = KFold(n_splits=k)
-    confidence_levels = 210 + np.arange(10) * 5  # empircally found to be the best confidence constant range in OLS
-    metric_per_conf_level = np.zeros(confidence_levels.shape[0])
-    for train_index, val_index in kf.split(patients):
-        train_patients = patients[train_index]
-        val_patients = patients[val_index]
-        validation_set = data[data['Patient'].isin(val_patients)]
-        training_set = data[data['Patient'].isin(train_patients)]
-        predictor, label_encoder, scaler = train(training_set, verbose=0)
-        fvc_initial_val, fvc_true_val, x_scaled_val = preprocess_validation_data(validation_set, scaler, label_encoder)
-        predicted_fvc_diff = predictor.predict(x_scaled_val)
-        fvc_predicted_val = predicted_fvc_diff + fvc_initial_val
-        # plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
-
-        for i in np.arange(confidence_levels.shape[0]):
-            # confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
-            confidence = calc_confidence(fvc_predicted_val, 0.09, confidence_levels[i])
-            metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
-            metric_per_conf_level[i] += metric
-    print(f'{k}-fold mean competition score, per confidence level:')
-    print(pd.DataFrame([confidence_levels, metric_per_conf_level / k]).to_string())
-
-
 def make_test_data_to_model_compatible(test_data, label_encoder, scaler):
     test_data_copy = test_data.copy()  # copy df to avoid side-affects
     possible_weeks = pd.DataFrame(np.arange(-12, 133 + 1), columns=['PossibleWeeks'])
@@ -188,7 +167,7 @@ def make_test_data_to_model_compatible(test_data, label_encoder, scaler):
                              + test_x_dont_scale['PossibleWeeks'].astype(str),
                              name='Patient_Week')
     df = df.drop(['Patient', 'PossibleWeeks', 'Percent'], axis=1)
-    df_scaled, _ = scale_features(df, scaler)
+    df_scaled = scale_features(df, scaler)
     return df, df_scaled, patient_week
 
 
@@ -214,8 +193,42 @@ def preprocess_validation_data(val_data, scaler, label_encoder):
     fvc_initial_val = val_base_and_secondary_pairs_enc['FVC']
     # prepare final training-set and labels
     x_val = define_features(val_base_and_secondary_pairs_enc)
-    x_scaled_val = scaler.transform(x_val)
+    x_scaled_val = scale_features(x_val, scaler)
     return fvc_initial_val, fvc_true_val, x_scaled_val
+
+
+def cross_validate(k, data):
+    patients = data['Patient'].unique()
+    kf = KFold(n_splits=k)
+    confidence_levels = 210 + np.arange(10) * 5  # empircally found to be the best confidence constant range in OLS
+    sum_score_per_conf_level = np.zeros(confidence_levels.shape[0])
+    for train_index, val_index in kf.split(patients):
+        train_patients = patients[train_index]
+        val_patients = patients[val_index]
+        validation_set = data[data['Patient'].isin(val_patients)]
+        training_set = data[data['Patient'].isin(train_patients)]
+        predictor, label_encoder, scaler = train(training_set, verbose=0)
+        fvc_initial_val, fvc_true_val, x_scaled_val = preprocess_validation_data(validation_set, scaler, label_encoder)
+        #x_scaled_val = x_scaled_val[training_set.columns]
+        predicted_fvc_diff = predictor.predict(x_scaled_val)
+        fvc_predicted_val = predicted_fvc_diff + fvc_initial_val
+        # plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
+
+        for i in np.arange(confidence_levels.shape[0]):
+            # confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
+            confidence = calc_confidence(fvc_predicted_val, 0.09, confidence_levels[i])
+            metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
+            sum_score_per_conf_level[i] += metric
+
+    mean_score_per_conf_level = sum_score_per_conf_level / k
+    print(f'\n{k}-fold mean competition score, per confidence level:')
+    tunning_df = pd.concat([pd.Series(confidence_levels, name='confidence_baseline'),
+                     pd.Series(mean_score_per_conf_level, name='score')],
+                    axis=1)
+    print(tunning_df.to_string())
+    best_confidence_baseline = tunning_df['confidence_baseline'][tunning_df['score'].argmax()]
+    print(f'best_confidence_baseline = {best_confidence_baseline}')
+    return best_confidence_baseline
 
 
 def train(train_meta, verbose=0):
@@ -228,26 +241,33 @@ def train(train_meta, verbose=0):
     if verbose > 0:
         print(ols_predictor.summary())
 
-    rf = RandomForestRegressor(n_estimators=40, random_state=0, max_leaf_nodes=5)
-    rf.fit(x_scaled_train, fvc_diff_train)
+    random_forest_model = RandomForestRegressor(n_estimators=40, random_state=0, max_leaf_nodes=5)
+    random_forest_model.fit(x_scaled_train, fvc_diff_train)
+
+    grad_boosting_model = XGBRegressor(n_estimators=25, learning_rate=0.05, n_jobs=4, max_depth=3, random_state=0)
+    grad_boosting_model.fit(x_scaled_train, fvc_diff_train)
+
+    # choose predictor manually
+    predictor = grad_boosting_model
 
     # sanity check prediction on training-set
-    predicted_fvc_diff = ols_predictor.predict(x_scaled_train)
+    predicted_fvc_diff = predictor.predict(x_scaled_train)
     fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
-    if verbose > 2:
+    if verbose > 1:
         plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
-        # confidence = np.ones(fvc_predicted_training.shape[0]) * 235
-        # metric = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
-    return rf, label_encoder, scaler
+    confidence = calc_confidence(fvc_predicted_training, 0.09, 230)
+    score = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
+    print(f'score for training set = {score}')
+    return predictor, label_encoder, scaler
 
 
-def predict(test_meta, predictor, scaler, label_encoder):
+def predict(test_meta, predictor, scaler, label_encoder, best_confidence_baseline):
     test_x, test_x_scaled, patient_week = make_test_data_to_model_compatible(test_meta, label_encoder, scaler)
     print(test_x)
     fvc_diff_prediction = predictor.predict(test_x_scaled)
     fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
     # set confidence above regression on training-set confidence interval
-    confidence = calc_confidence(fvc_prediction, 0.09, 230)
+    confidence = calc_confidence(fvc_prediction, 0.09, best_confidence_baseline)
     submission_df = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
     return fvc_prediction, submission_df
 
@@ -257,10 +277,10 @@ def main():
     train_meta = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/train.csv')
     test_meta = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/test.csv')
 
-    cross_validate(10, train_meta)
+    best_confidence_baseline = cross_validate(10, train_meta)
     # explore_data(train_meta)
     predictor, label_encoder, scaler = train(train_meta, verbose=1)
-    _, submission_df = predict(test_meta, predictor, scaler, label_encoder)
+    _, submission_df = predict(test_meta, predictor, scaler, label_encoder, best_confidence_baseline)
     submission_df.to_csv('submission.csv', index=False)
 
 
