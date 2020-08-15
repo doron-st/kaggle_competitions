@@ -11,6 +11,11 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.python.keras import regularizers
+from sklearn.model_selection import train_test_split
+from dataclasses import dataclass
 
 
 ####################
@@ -20,8 +25,30 @@ from xgboost import XGBRegressor
 # Current best OLS cross-validation score -6.7918
 # Current best RF cross-validation score  -6.7788 (n_estimators=50, random_state=0, max_leaf_nodes=5)) StandardScaler
 # current best GB cross-validation score  -6.7695 (n_estimators=25, learning_rate=0.05, n_jobs=4, max_depth=3)
+# current best NN cross-validation score  -6.7644
 # RF performs better than GB on competition test-data (which base the score on final 3 measurements
+
 RANDOM_STATE = 2
+MAXIMAL_SCORE_DIFF = 1000
+MINIMAL_SCORE_STD = 70
+
+
+@dataclass(frozen=True)
+class NueralNetConfig:
+    epochs: int
+    learning_rate: float
+    layer_size: int
+    batch_size: int
+    dropout_rate: float
+    fit_verbosity: int
+
+
+nn_config = NueralNetConfig(epochs=5,
+                            learning_rate=0.01,
+                            layer_size=100,
+                            batch_size=128,
+                            dropout_rate=0.2,
+                            fit_verbosity=0)
 
 
 def explore_data(df):
@@ -140,12 +167,27 @@ def plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted, fvc_true):
     print(predictor.summary())
 
 
-def evaluate_results(fvc_true, fvc_predicted, std):
+def calc_tensor_score(fvc_true, fvc_predicted):
+    tf.dtypes.cast(fvc_true, tf.float32)
+    tf.dtypes.cast(fvc_predicted, tf.float32)
+    sigma = tf.dtypes.cast(np.ones(fvc_true.shape[0]) * 230, tf.float32)
+    fvc_pred = fvc_predicted[:, 0]
+
+    # sigma_clip = sigma + C1
+    sigma_clip = tf.maximum(sigma, MINIMAL_SCORE_STD)
+    delta = tf.abs(fvc_true[:, 0] - fvc_pred)
+    delta = tf.minimum(delta, MAXIMAL_SCORE_DIFF)
+    sq2 = tf.sqrt(tf.dtypes.cast(2, dtype=tf.float32))
+    metric = (delta / sigma_clip) * sq2 + tf.math.log(sigma_clip * sq2)
+    return keras.backend.mean(metric)
+
+
+def calc_score(fvc_true, fvc_predicted, std):
     assert fvc_true.shape == fvc_predicted.shape
     assert fvc_true.shape == std.shape
 
-    std_clipped = np.maximum(std, 70)
-    delta = np.minimum(np.abs(fvc_true - fvc_predicted), 1000)
+    std_clipped = np.maximum(std, MINIMAL_SCORE_STD)
+    delta = np.minimum(np.abs(fvc_true - fvc_predicted), MAXIMAL_SCORE_DIFF)
     metric = (-1 * sqrt(2) * delta).divide(std_clipped) - np.log(sqrt(2) * std_clipped)
     # plt.hist(metric, bins=20)
     return np.mean(metric)
@@ -231,14 +273,19 @@ def cross_validate(k, data, regressor):
         fvc_initial_val, fvc_true_val, x_scaled_val = preprocess_validation_data(validation_set, scaler, label_encoder)
         # x_scaled_val = x_scaled_val[training_set.columns]
         predicted_fvc_diff = predictor.predict(x_scaled_val)
+        if regressor == 'neural_net':
+            predicted_fvc_diff = pd.Series(predicted_fvc_diff.flatten(), index=fvc_initial_val.index)
+
         fvc_predicted_val = predicted_fvc_diff + fvc_initial_val
         # plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_val, fvc_true_val)
 
         for i in np.arange(confidence_levels.shape[0]):
             # confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
             confidence = calc_confidence(fvc_predicted_val, x_scaled_val['WeeksDiff'], 0.09, confidence_levels[i])
-            metric = evaluate_results(fvc_predicted_val, fvc_true_val, confidence)
-            sum_score_per_conf_level[i] += metric
+            score = calc_score(fvc_predicted_val, fvc_true_val, confidence)
+            if i==3:
+                print(score)
+            sum_score_per_conf_level[i] += score
 
     mean_score_per_conf_level = sum_score_per_conf_level / k
     print(f'\n{k}-fold mean competition score of {regressor}, per confidence level:')
@@ -252,6 +299,41 @@ def cross_validate(k, data, regressor):
     print(f'{regressor} best_val_confidence_baseline = {best_confidence_baseline}')
     print(f'{regressor} best_val_score = {best_val_score}\n')
     return best_confidence_baseline
+
+
+def build_and_compile_nn(num_of_features, layer_size=100, dropout_rate=0.2, verbose=0):
+    # Build the model
+    model = keras.models.Sequential([
+        keras.layers.Dense(layer_size, input_shape=[num_of_features], activation='relu', kernel_regularizer=regularizers.l1(0.001)),
+        keras.layers.Dropout(dropout_rate),
+        keras.layers.Dense(int(layer_size / 2), activation='relu'),
+        keras.layers.Dropout(dropout_rate),
+        keras.layers.Dense(1),
+    ])
+        #keras.layers.Dense(3, activation='relu'),
+        #keras.layers.Lambda(lambda x: x[0] + tf.cumsum(x[1], axis = 1))
+
+    #     z = L.Input((nh,), name="Patient")
+    # x = L.Dense(100, activation="relu", name="d1")(z)
+    # x = L.Dense(100, activation="relu", name="d2")(x)
+    # p1 = L.Dense(3, activation="linear", name="p1")(x)
+    # p2 = L.Dense(3, activation="relu", name="p2")(x)
+    # preds = L.Lambda(lambda x: x[0] + tf.cumsum(x[1], axis=1),
+    #                  name="preds")([p1, p2])
+
+    if verbose > 0:
+        print(model.summary())
+
+    # Construct loss function
+    #loss_fn = calc_tensor_score
+    #loss_fn = mloss(0.8)
+    loss_fn = 'mae'
+
+    # compile loss function into model
+    model.compile(optimizer=keras.optimizers.Adam(lr=nn_config.learning_rate, beta_1=0.9, beta_2=0.999, epsilon=None, decay=nn_config.learning_rate/10, amsgrad=False),
+                  loss=loss_fn,
+                  metrics=['mae'])
+    return model
 
 
 def train(train_meta, regressor, verbose=0):
@@ -274,33 +356,45 @@ def train(train_meta, regressor, verbose=0):
         predictor.fit(x_scaled_train, fvc_diff_train)
     elif regressor == 'ols':
         predictor = ols_predictor
-
+    elif regressor == 'neural_net':
+        predictor = build_and_compile_nn(x_scaled_train.shape[1], layer_size=nn_config.layer_size, dropout_rate=nn_config.dropout_rate, verbose=0)
+        predictor.fit(x_scaled_train, fvc_diff_train, epochs=nn_config.epochs, batch_size=nn_config.batch_size, verbose=nn_config.fit_verbosity)
+    else:
+        raise RuntimeError('no such regressor: ' + regressor)
 
     # sanity check prediction on training-set
     predicted_fvc_diff = predictor.predict(x_scaled_train)
+    if regressor == 'neural_net':
+        predicted_fvc_diff = pd.Series(predicted_fvc_diff.flatten(), index=fvc_initial_train.index)
+
     fvc_predicted_training = predicted_fvc_diff + fvc_initial_train
     if verbose > 1:
         plot_actual_fvc_vs_predicted_in_training_set(fvc_predicted_training, fvc_true_train)
     confidence = calc_confidence(fvc_predicted_training, x_scaled_train['WeeksDiff'], 0.09, 230)
-    score = evaluate_results(fvc_predicted_training, fvc_true_train, confidence)
+    score = calc_score(fvc_predicted_training, fvc_true_train, confidence)
     return predictor, label_encoder, scaler, score
 
 
 def get_scaler_matched_to_regressor(regressor):
-    scaler_name = ''
     if regressor == 'ols':
         scaler_name = 'min_max'
     elif regressor == 'random_forest':
         scaler_name = 'standard'
     elif regressor == 'grad_boost':
         scaler_name = 'standard'
+    elif regressor == 'neural_net':
+        scaler_name = 'standard'
+    else:
+        raise RuntimeError(f'No such regressor {regressor}')
     return scaler_name
 
 
-def predict(test_meta, predictor, scaler, label_encoder, best_confidence_baseline):
-    test_x, test_x_scaled, patient_week = make_test_data_to_model_compatible(test_meta, label_encoder, scaler)
+def _predict(test_data, predictor, scaler, label_encoder, best_confidence_baseline, regressor):
+    test_x, test_x_scaled, patient_week = make_test_data_to_model_compatible(test_data, label_encoder, scaler)
     print(test_x)
     fvc_diff_prediction = predictor.predict(test_x_scaled)
+    if regressor == 'neural_net':
+        fvc_diff_prediction = pd.Series(fvc_diff_prediction.flatten(), index=test_x_scaled.index)
     fvc_prediction = pd.Series(test_x['FVC'] + fvc_diff_prediction, name='FVC').astype(int)
     # set confidence above regression on training-set confidence interval
     confidence = calc_confidence(fvc_prediction, test_x_scaled['WeeksDiff'], 0.09, best_confidence_baseline)
@@ -315,10 +409,14 @@ def main():
 
     cross_validate(10, train_data, 'ols')
     cross_validate(10, train_data, 'random_forest')
-    best_confidence_baseline = cross_validate(10, train_data, 'grad_boost')
+    cross_validate(10, train_data, 'grad_boost')
     # explore_data(train_meta)
-    predictor, label_encoder, scaler, score = train(train_data, 'random_forest', verbose=1)
-    submission_df = predict(test_data, predictor, scaler, label_encoder, best_confidence_baseline)
+
+    chosen_predictor = 'neural_net'
+    best_confidence_baseline = cross_validate(10, train_data, chosen_predictor)
+
+    predictor, label_encoder, scaler, score = train(train_data, chosen_predictor, verbose=1)
+    submission_df = _predict(test_data, predictor, scaler, label_encoder, best_confidence_baseline, chosen_predictor)
     submission_df.to_csv('submission.csv', index=False)
 
 
