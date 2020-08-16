@@ -17,7 +17,6 @@ from tensorflow.python.keras import regularizers
 from sklearn.model_selection import train_test_split
 from dataclasses import dataclass
 
-
 ####################
 # meta-data analysis
 ####################
@@ -28,13 +27,24 @@ from dataclasses import dataclass
 # current best NN cross-validation score  -6.7644
 # RF performs better than GB on competition test-data (which base the score on final 3 measurements
 
+# todo try to do use real confidence level in NN loss_fn, by using global params
+# todo try to predict FVC directly and not FVCDiff, for learning perposes
+# todo compare methods on MSE
+# todo measure accuracy only on 3 last observations, or on late observations
+# todo try ensembling several models from same-type mix-type
+# todo run and understand 6.83 notebook from kaggle
+# todo try using hist level to characterize pulmonary-fibrosis in CT scan
+# todo inspect CT position characteristics
+# todo try calculating fibrosis percentage from CT scans, and use in predictive model
+
+
 RANDOM_STATE = 2
 MAXIMAL_SCORE_DIFF = 1000
 MINIMAL_SCORE_STD = 70
 
 
 @dataclass(frozen=True)
-class NueralNetConfig:
+class NeuralNetConfig:
     epochs: int
     learning_rate: float
     layer_size: int
@@ -43,12 +53,32 @@ class NueralNetConfig:
     fit_verbosity: int
 
 
-nn_config = NueralNetConfig(epochs=5,
+nn_config = NeuralNetConfig(epochs=5,
                             learning_rate=0.01,
                             layer_size=100,
                             batch_size=128,
                             dropout_rate=0.2,
                             fit_verbosity=0)
+
+predictive_model_names = ['ols', 'random_forest', 'grad_boost', 'neural_net']
+chosen_predictive_model_name = 'neural_net'
+
+
+def main():
+    # Load meta-data
+    train_data = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/train.csv')
+    test_data = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/test.csv')
+
+    best_confidence_baseline = -1
+    for predictive_model_name in predictive_model_names:
+        if predictive_model_name == chosen_predictive_model_name:
+            best_confidence_baseline = cross_validate(10, train_data, predictive_model_name)
+        else:
+            cross_validate(10, train_data, predictive_model_name)
+
+    predictive_model, label_encoder, scaler, score = train(train_data, chosen_predictive_model_name, verbose=1)
+    submission_df = _predict(test_data, predictive_model, scaler, label_encoder, best_confidence_baseline, chosen_predictive_model_name)
+    submission_df.to_csv('submission.csv', index=False)
 
 
 def explore_data(df):
@@ -259,7 +289,7 @@ def cross_validate(k, data, regressor):
     patients = data['Patient'].unique()
     kf = KFold(n_splits=k)
     num_of_confidence_levels = 10
-    initial_confidence_base_line = 200 # close to optimum point
+    initial_confidence_base_line = 200  # close to optimum point
     confidence_levels = initial_confidence_base_line + np.arange(num_of_confidence_levels) * 5
     sum_score_per_conf_level = np.zeros(confidence_levels.shape[0])
     sum_training_score = 0
@@ -283,7 +313,7 @@ def cross_validate(k, data, regressor):
             # confidence = calc_confidence(fvc_predicted_val, confidence_levels[i]) # -6.817702
             confidence = calc_confidence(fvc_predicted_val, x_scaled_val['WeeksDiff'], 0.09, confidence_levels[i])
             score = calc_score(fvc_predicted_val, fvc_true_val, confidence)
-            if i==3:
+            if i == 3:
                 print(score)
             sum_score_per_conf_level[i] += score
 
@@ -304,14 +334,15 @@ def cross_validate(k, data, regressor):
 def build_and_compile_nn(num_of_features, layer_size=100, dropout_rate=0.2, verbose=0):
     # Build the model
     model = keras.models.Sequential([
-        keras.layers.Dense(layer_size, input_shape=[num_of_features], activation='relu', kernel_regularizer=regularizers.l1(0.001)),
+        keras.layers.Dense(layer_size, input_shape=[num_of_features], activation='relu',
+                           kernel_regularizer=regularizers.l1(0.001)),
         keras.layers.Dropout(dropout_rate),
         keras.layers.Dense(int(layer_size / 2), activation='relu'),
         keras.layers.Dropout(dropout_rate),
         keras.layers.Dense(1),
     ])
-        #keras.layers.Dense(3, activation='relu'),
-        #keras.layers.Lambda(lambda x: x[0] + tf.cumsum(x[1], axis = 1))
+    # keras.layers.Dense(3, activation='relu'),
+    # keras.layers.Lambda(lambda x: x[0] + tf.cumsum(x[1], axis = 1))
 
     #     z = L.Input((nh,), name="Patient")
     # x = L.Dense(100, activation="relu", name="d1")(z)
@@ -325,12 +356,13 @@ def build_and_compile_nn(num_of_features, layer_size=100, dropout_rate=0.2, verb
         print(model.summary())
 
     # Construct loss function
-    #loss_fn = calc_tensor_score
-    #loss_fn = mloss(0.8)
+    # loss_fn = calc_tensor_score
+    # loss_fn = mloss(0.8)
     loss_fn = 'mae'
 
     # compile loss function into model
-    model.compile(optimizer=keras.optimizers.Adam(lr=nn_config.learning_rate, beta_1=0.9, beta_2=0.999, epsilon=None, decay=nn_config.learning_rate/10, amsgrad=False),
+    model.compile(optimizer=keras.optimizers.Adam(lr=nn_config.learning_rate, beta_1=0.9, beta_2=0.999, epsilon=None,
+                                                  decay=nn_config.learning_rate / 10, amsgrad=False),
                   loss=loss_fn,
                   metrics=['mae'])
     return model
@@ -357,8 +389,10 @@ def train(train_meta, regressor, verbose=0):
     elif regressor == 'ols':
         predictor = ols_predictor
     elif regressor == 'neural_net':
-        predictor = build_and_compile_nn(x_scaled_train.shape[1], layer_size=nn_config.layer_size, dropout_rate=nn_config.dropout_rate, verbose=0)
-        predictor.fit(x_scaled_train, fvc_diff_train, epochs=nn_config.epochs, batch_size=nn_config.batch_size, verbose=nn_config.fit_verbosity)
+        predictor = build_and_compile_nn(x_scaled_train.shape[1], layer_size=nn_config.layer_size,
+                                         dropout_rate=nn_config.dropout_rate, verbose=0)
+        predictor.fit(x_scaled_train, fvc_diff_train, epochs=nn_config.epochs, batch_size=nn_config.batch_size,
+                      verbose=nn_config.fit_verbosity)
     else:
         raise RuntimeError('no such regressor: ' + regressor)
 
@@ -391,7 +425,6 @@ def get_scaler_matched_to_regressor(regressor):
 
 def _predict(test_data, predictor, scaler, label_encoder, best_confidence_baseline, regressor):
     test_x, test_x_scaled, patient_week = make_test_data_to_model_compatible(test_data, label_encoder, scaler)
-    print(test_x)
     fvc_diff_prediction = predictor.predict(test_x_scaled)
     if regressor == 'neural_net':
         fvc_diff_prediction = pd.Series(fvc_diff_prediction.flatten(), index=test_x_scaled.index)
@@ -400,24 +433,6 @@ def _predict(test_data, predictor, scaler, label_encoder, best_confidence_baseli
     confidence = calc_confidence(fvc_prediction, test_x_scaled['WeeksDiff'], 0.09, best_confidence_baseline)
     submission_df = pd.concat([patient_week, fvc_prediction, confidence], axis=1)
     return submission_df
-
-
-def main():
-    # Load meta-data
-    train_data = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/train.csv')
-    test_data = pd.read_csv('../input/osic-pulmonary-fibrosis-progression/test.csv')
-
-    cross_validate(10, train_data, 'ols')
-    cross_validate(10, train_data, 'random_forest')
-    cross_validate(10, train_data, 'grad_boost')
-    # explore_data(train_meta)
-
-    chosen_predictor = 'neural_net'
-    best_confidence_baseline = cross_validate(10, train_data, chosen_predictor)
-
-    predictor, label_encoder, scaler, score = train(train_data, chosen_predictor, verbose=1)
-    submission_df = _predict(test_data, predictor, scaler, label_encoder, best_confidence_baseline, chosen_predictor)
-    submission_df.to_csv('submission.csv', index=False)
 
 
 if __name__ == '__main__':
